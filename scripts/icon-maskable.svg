@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Icono "maskable": zona segura del 80% (logo centrado con margen) -->
+  <defs>
+    <linearGradient id="brand" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#0f0f12"/>
+  <g transform="translate(146,146)">
+    <rect width="220" height="220" rx="50" fill="url(#brand)"/>
+    <text x="110" y="140" font-family="DejaVu Sans, Arial, sans-serif" font-size="86"
+          font-weight="bold" fill="#0f0f12" text-anchor="middle">ixi</text>
+    <circle cx="176" cy="178" r="36" fill="#0f0f12"/>
+    <text x="176" y="190" font-family="DejaVu Sans, Arial, sans-serif" font-size="30"
+          font-weight="bold" fill="#22d3ee" text-anchor="middle">4k</text>
+  </g>
+</svg>

@@ -1,0 +1,3 @@
+# Cloudflare Pages — SPA routing
+# Todas las rutas cargan index.html (React controla el enrutamiento interno).
+/*    /index.html   200

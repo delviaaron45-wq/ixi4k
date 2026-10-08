@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="brand" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <radialGradient id="glowCyan" cx="15%" cy="20%" r="55%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="85%" cy="85%" r="55%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="#0f0f12"/>
+  <rect width="1200" height="630" fill="url(#glowCyan)"/>
+  <rect width="1200" height="630" fill="url(#glowViolet)"/>
+
+  <!-- Logo -->
+  <g transform="translate(96,235)">
+    <rect width="160" height="160" rx="36" fill="url(#brand)"/>
+    <text x="80" y="102" font-family="DejaVu Sans, Arial, sans-serif" font-size="62"
+          font-weight="bold" fill="#0f0f12" text-anchor="middle">ixi</text>
+    <circle cx="130" cy="130" r="26" fill="#0f0f12"/>
+    <text x="130" y="140" font-family="DejaVu Sans, Arial, sans-serif" font-size="22"
+          font-weight="bold" fill="#22d3ee" text-anchor="middle">4k</text>
+  </g>
+
+  <!-- Titular -->
+  <text x="310" y="290" font-family="DejaVu Sans, Arial, sans-serif" font-size="66"
+        font-weight="bold" fill="#ffffff">ixi 4k — Edits 4K para TikTok</text>
+  <text x="310" y="358" font-family="DejaVu Sans, Arial, sans-serif" font-size="34"
+        fill="#a1a1aa">Upscale cinematográfico + optimización del algoritmo</text>
+
+  <!-- Chips -->
+  <g font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="bold">
+    <rect x="310" y="400" width="250" height="60" rx="30" fill="#22d3ee" fill-opacity="0.14" stroke="#22d3ee" stroke-opacity="0.5"/>
+    <text x="435" y="438" fill="#22d3ee" text-anchor="middle">Score de Viralidad</text>
+
+    <rect x="580" y="400" width="250" height="60" rx="30" fill="#8b5cf6" fill-opacity="0.14" stroke="#8b5cf6" stroke-opacity="0.5"/>
+    <text x="705" y="438" fill="#a78bfa" text-anchor="middle">Anti-Shadowban</text>
+
+    <rect x="850" y="400" width="254" height="60" rx="30" fill="#22c55e" fill-opacity="0.12" stroke="#22c55e" stroke-opacity="0.45"/>
+    <text x="977" y="438" fill="#4ade80" text-anchor="middle">Export 4K 60 FPS</text>
+  </g>
+</svg>

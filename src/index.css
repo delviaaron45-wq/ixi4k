@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-ixi-border;
+  }
+  
+  html {
+    @apply scroll-smooth;
+  }
+  
+  body {
+    @apply bg-ixi-bg text-ixi-text font-sans;
+    background-image: 
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(229, 9, 20, 0.08), transparent),
+      radial-gradient(ellipse 60% 40% at 80% 100%, rgba(255, 30, 66, 0.05), transparent);
+    background-attachment: fixed;
+  }
+  
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+  
+  ::-webkit-scrollbar-track {
+    @apply bg-ixi-bgSecondary;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ixi-border rounded-full hover:bg-ixi-textMuted transition-colors;
+  }
+}
+
+@layer components {
+  /* CTA principal: degradado Carmesí → Rojo Neón con resplandor al hover/focus */
+  .btn-primary {
+    @apply relative px-6 py-3 bg-gradient-to-r from-[#FF1E42] to-[#E50914] text-ixi-bg font-semibold rounded-xl overflow-hidden transition-all duration-300 active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FF1E42] focus-visible:ring-offset-2 focus-visible:ring-offset-ixi-bg;
+    box-shadow: 0 0 0 rgba(229, 9, 20, 0);
+  }
+  .btn-primary:hover,
+  .btn-primary:focus-visible {
+    box-shadow: 0 0 20px rgba(229, 9, 20, 0.4);
+  }
+  
+  .btn-secondary {
+    @apply relative px-6 py-3 bg-ixi-bgCard border border-white/10 text-ixi-text font-semibold rounded-xl transition-all duration-300 hover:bg-ixi-bgSecondary hover:border-[#FF1E42]/50 hover:shadow-neon-red active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FF1E42] focus-visible:ring-offset-2 focus-visible:ring-offset-ixi-bg;
+  }
+  
+  .btn-ghost {
+    @apply relative px-4 py-2 text-ixi-textMuted font-medium rounded-lg transition-all duration-300 hover:text-[#FF4E68] hover:bg-[#FF1E42]/10 active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FF1E42] focus-visible:ring-offset-2 focus-visible:ring-offset-ixi-bg;
+  }
+  
+  /* Cristal esmerilado: fondo semitransparente, blur, borde fino blanco */
+  .card {
+    @apply bg-ixi-bgCard/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-xl shadow-black/20;
+  }
+  
+  .card-glow {
+    @apply card relative before:absolute before:inset-0 before:rounded-2xl before:bg-gradient-to-br before:from-[#FF1E42]/10 before:to-[#E50914]/10 before:opacity-0 before:transition-opacity before:pointer-events-none hover:before:opacity-100;
+  }
+  
+  .input-field {
+    @apply w-full px-4 py-3 bg-ixi-bgSecondary/50 border border-white/10 rounded-xl text-ixi-text placeholder-ixi-textMuted transition-all duration-300 focus:border-[#FF1E42] focus:ring-2 focus:ring-[#FF1E42]/20 focus:bg-ixi-bgSecondary focus:outline-none;
+  }
+  
+  .toggle-switch {
+    @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[#FF1E42] focus:ring-offset-2 focus:ring-offset-ixi-bg;
+  }
+  
+  .toggle-thumb {
+    @apply h-4 w-4 transform bg-white rounded-full shadow-lg transition-transform duration-300 ease-in-out;
+  }
+  
+  .glass-panel {
+    @apply bg-ixi-bgCard/60 backdrop-blur-2xl border border-white/10 rounded-2xl;
+  }
+  
+  .neon-text {
+    @apply bg-gradient-to-r from-[#FF1E42] via-[#FF5A72] to-[#E50914] bg-clip-text text-transparent animate-shimmer bg-[length:200%_auto];
+  }
+
+  /* ===== Sliders Pro: barra de progreso Rojo Neón + tirador circular con borde brillante =====
+     El punto de relleno se controla con la variable CSS --fill (0–100%) que
+     cada componente actualiza con el valor actual del control. */
+  .range-neon {
+    @apply w-full h-2 rounded-full appearance-none cursor-pointer;
+    background: linear-gradient(
+      to right,
+      #ff1e42 0%,
+      #e50914 var(--fill, 0%),
+      rgba(255, 255, 255, 0.08) var(--fill, 0%),
+      rgba(255, 255, 255, 0.08) 100%
+    );
+  }
+  .range-neon::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 9999px;
+    background: #ff1e42;
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 10px rgba(229, 9, 20, 0.7);
+    transition: box-shadow 0.15s ease;
+  }
+  .range-neon::-webkit-slider-thumb:hover,
+  .range-neon:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 16px rgba(229, 9, 20, 0.95);
+  }
+  .range-neon::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: #ff1e42;
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 10px rgba(229, 9, 20, 0.7);
+  }
+  .range-neon::-moz-range-track {
+    background: transparent;
+  }
+  .range-neon:focus-visible {
+    outline: none;
+  }
+
+  /* ===== Chips Pro (RTX ACTIVE · 4K UHD · 60 FPS): rojo oscuro + borde brillante ===== */
+  .chip-pro {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider select-none;
+    background: rgba(229, 9, 20, 0.14);
+    border: 1px solid rgba(255, 62, 92, 0.65);
+    color: #ff6076;
+    box-shadow: 0 0 8px rgba(229, 9, 20, 0.25), inset 0 0 8px rgba(229, 9, 20, 0.12);
+  }
+}
+
+@layer utilities {
+  .animate-in {
+    animation: animate-in 0.3s ease-out forwards;
+  }
+  
+  @keyframes animate-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  .stagger-1 { animation-delay: 50ms; }
+  .stagger-2 { animation-delay: 100ms; }
+  .stagger-3 { animation-delay: 150ms; }
+  .stagger-4 { animation-delay: 200ms; }
+  .stagger-5 { animation-delay: 250ms; }
+  .stagger-6 { animation-delay: 300ms; }
+}
+
+/* ===== Pro Dark Theme: títulos en mayúsculas, peso black y tracking amplio =====
+   (sin capa @layer: debe ganar a las utilidades sueltas como font-bold) */
+h1,
+h2 {
+  font-weight: 900 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase;
+}
+
+/* Táctil: los botones responden al tap sin disparar zoom por doble toque */
+button,
+[role='button'],
+a {
+  touch-action: manipulation;
+}

@@ -1,0 +1,33 @@
+# ixi 4k — robots.txt
+# Permite el rastreo de la página pública principal
+User-agent: *
+Allow: /
+
+# --- Zonas privadas: NUNCA indexar ---
+# Panel de administración
+Disallow: /admin
+Disallow: /admin/
+# Dashboards / paneles privados
+Disallow: /dashboard
+Disallow: /dashboard/
+Disallow: /panel
+Disallow: /panel/
+Disallow: /app
+Disallow: /app/
+# Áreas de usuario / acceso
+Disallow: /account
+Disallow: /login
+Disallow: /user
+Disallow: /private
+# APIs y datos privados
+Disallow: /api/
+Disallow: /api
+# Cualquier URL con parámetros (estados privados, sesiones, utm, etc.)
+Disallow: /*?*
+
+# Mantiene el sitemap fuera de las consultas
+Allow: /sitemap.xml
+Allow: /robots.txt
+
+# Sitemap
+Sitemap: %VITE_SITE_URL%/sitemap.xml

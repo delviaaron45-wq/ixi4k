@@ -1,0 +1,29 @@
+# Dependencias
+node_modules/
+
+# Build
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# Entorno — NUNCA subir secretos
+.env
+.env.local
+.env.*.local
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/*.json
+
+# Logs y temporales
+logs/
+*.log
+npm-debug.log*
+.DS_Store
+tmp/
+temp/
+
+# Editores
+.vscode/*
+!.vscode/extensions.json
+.idea/

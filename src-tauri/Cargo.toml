@@ -1,0 +1,33 @@
+[package]
+name = "ixi-4k"
+version = "1.0.0"
+description = "ixi 4k - Mejora la calidad de tus edits cinematográficos para TikTok"
+authors = ["ixi 4k Team"]
+license = "MIT"
+repository = ""
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = [] }
+tauri-plugin-shell = "2.0.0"
+tauri-plugin-dialog = "2.0.0"
+tauri-plugin-fs = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1.0", features = ["v4"] }
+dirs = "5.0"
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+bcrypt = "0.16"
+futures = "0.3"
+# 2FA de administrador (TOTP RFC 6238): HMAC-SHA1 + base32 verificados en Rust
+hmac = "0.12"
+sha1 = "0.10"
+data-encoding = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

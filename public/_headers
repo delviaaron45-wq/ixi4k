@@ -1,0 +1,12 @@
+# Cloudflare Pages — Headers de seguridad y compatibilidad
+
+# COOP/COEP: requeridos para WebCodecs / FFmpeg.wasm (SharedArrayBuffer)
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Archivos estáticos: caché larga (inmutables por hash)
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

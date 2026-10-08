@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permisos de ixi 4k: eventos de progreso real de exportación (core) y diálogo nativo de archivo de respaldo (dialog).",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}
