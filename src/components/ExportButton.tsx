@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Download, CheckCircle, AlertCircle, Loader2, FolderOpen, X, Terminal, Info } from 'lucide-react';
+import { Download, CheckCircle, AlertCircle, Loader2, FolderOpen, X, Terminal, Info, Share2 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { buildRenderSettings, describeRenderPlan, upscaleNote } from '@/lib/qualityPipeline';
+import { canSaveToGallery, saveVideoToGallery } from '@/lib/saveVideo';
 import { usePlatform } from '@/services/platformService';
 
 /** ETA legible ("42s" / "3m 05s") — nunca inventado: sale del progreso real. */
@@ -40,6 +41,8 @@ export function ExportButton() {
   const currentVideo = useAppStore((s) => s.currentVideo);
   const exportedFilePath = useAppStore((s) => s.exportedFilePath);
   const showSuccessNotification = useAppStore((s) => s.showSuccessNotification);
+  const exportedBlob = useAppStore((s) => s.exportedBlob);
+  const webSaveOutcome = useAppStore((s) => s.webSaveOutcome);
   const openDownloadsFolder = useAppStore((s) => s.openDownloadsFolder);
   const dismissNotification = useAppStore((s) => s.dismissNotification);
   const exportMeta = useAppStore((s) => s.exportMeta);
@@ -107,6 +110,23 @@ export function ExportButton() {
     const ok = await openDownloadsFolder();
     setFolderState(ok ? 'idle' : 'error');
   };
+
+  // "Guardar en galería" (Web Share API, sólo en dispositivos que la soportan):
+  // abre la hoja del sistema para que el usuario elija «Guardar en Fotos».
+  // Estado real: guardando → ✓ guardado / cancelado / error (siempre reintentable).
+  const [galleryState, setGalleryState] = useState<
+    'idle' | 'saving' | 'saved' | 'cancelled' | 'error'
+  >('idle');
+  const canGallery = !!exportedBlob && canSaveToGallery();
+  const handleSaveGallery = async () => {
+    if (!exportedBlob || galleryState === 'saving') return;
+    setGalleryState('saving');
+    const name = exportedFilePath?.split(/[\\/]/).pop() || `ixi4k_edit_${Date.now()}.mp4`;
+    const out = await saveVideoToGallery(exportedBlob, name);
+    setGalleryState(out === 'shared' || out === 'downloaded' ? 'saved' : out);
+  };
+  // Éxito real de guardado: share completado en el export o por el botón
+  const gallerySaved = webSaveOutcome === 'shared' || galleryState === 'saved';
 
   return (
     <motion.div
@@ -325,8 +345,45 @@ export function ExportButton() {
                 <p className="text-xs text-ixi-textMuted truncate">
                   {exportedFilePath?.split(/[\\/]/).pop() || 'Archivo guardado en Descargas'}
                 </p>
+                {/* Confirmación VERAZ de lo que pasó de verdad (share/descarga) */}
+                {gallerySaved ? (
+                  <p className="text-[11px] text-ixi-success mt-1 flex items-center gap-1">
+                    <CheckCircle className="w-3 h-3" /> Guardado donde elegiste (p. ej. Fotos)
+                  </p>
+                ) : canGallery ? (
+                  <p className="text-[11px] text-ixi-cyan mt-1">
+                    {galleryState === 'cancelled'
+                      ? 'Guardado cancelado — pulsa «Guardar en galería» cuando quieras'
+                      : galleryState === 'error'
+                        ? 'No se pudo guardar — vuelve a pulsar el botón'
+                        : 'Pulsa «Guardar en galería» para añadirlo a Fotos'}
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
+                {canGallery && (
+                  <button
+                    onClick={handleSaveGallery}
+                    disabled={galleryState === 'saving'}
+                    aria-label="Guardar en la galería"
+                    title="Guardar en la galería (Fotos)"
+                    className={`p-2 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-wait ${
+                      galleryState === 'error'
+                        ? 'bg-ixi-danger/10 hover:bg-ixi-danger/20 text-ixi-danger'
+                        : gallerySaved
+                          ? 'bg-ixi-success/10 hover:bg-ixi-success/20 text-ixi-success'
+                          : 'bg-ixi-cyan/10 hover:bg-ixi-cyan/20 text-ixi-cyan'
+                    }`}
+                  >
+                    {galleryState === 'saving' ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : gallerySaved ? (
+                      <CheckCircle className="w-4 h-4" />
+                    ) : (
+                      <Share2 className="w-4 h-4" />
+                    )}
+                  </button>
+                )}
                 {isTauriEnv && (
                   <button
                     onClick={handleOpenFolder}

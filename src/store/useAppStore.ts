@@ -8,6 +8,7 @@ import {
   isBrowserExportSupported,
   type BrowserExportProgress,
 } from '@/lib/browserExport';
+import { canSaveToGallery, downloadVideoBlob, saveVideoToGallery } from '@/lib/saveVideo';
 import { detectDeviceTier, detectPlatform, isMobilePlatform } from '@/services/platformService';
 
 // Safe invoke wrapper for Tauri
@@ -267,6 +268,14 @@ interface AppState {
   exportError: string | null;
   exportedFilePath: string | null;
   showSuccessNotification: boolean;
+  /**
+   * Blob del vídeo exportado por la WEB (no se persiste en localStorage):
+   * permite «Guardar en galería» con Web Share API desde la notificación
+   * de éxito (el <a download> de antes iba a Descargas, nunca a Fotos).
+   */
+  exportedBlob: Blob | null;
+  /** Resultado VERAZ de la entrega web: compartido / descargado / cancelado / error */
+  webSaveOutcome: 'shared' | 'downloaded' | 'cancelled' | 'error' | null;
   /** Datos REALES del plan/progreso: resolución, FPS, ETA, aceleración, avisos */
   exportMeta: ExportMeta | null;
   exportSettings: {
@@ -448,6 +457,8 @@ export const useAppStore = create<AppState>()(
       exportError: null,
       exportedFilePath: null,
       showSuccessNotification: false,
+      exportedBlob: null,
+      webSaveOutcome: null,
       exportSettings: {
         sharpness: 100,
         contrast: 1.15,
@@ -674,24 +685,28 @@ export const useAppStore = create<AppState>()(
               },
             });
 
-            // Descarga real del resultado (el navegador lo guarda en Descargas).
-            // Nombre PROPIO (como el nativo): nunca con el del origen, para no
-            // sobrescribir el vídeo original en la carpeta de descargas.
+            // Entrega del resultado (nombre PROPIO: nunca el del origen, para
+            // no sobrescribir el vídeo original en Descargas).
+            //  · Móvil con Web Share API: se abre la hoja del sistema para que
+            //    el usuario elija «Guardar en Fotos/Galería» — la ÚNICA vía real
+            //    hacia la galería desde un navegador (un <a download> va a
+            //    Descargas/Archivos y en iOS ni siquiera se ve en Fotos).
+            //    Requiere gesto: si el SO lo bloquea tras el export, se cae a
+            //    la descarga y queda el botón «Guardar en galería» del aviso.
+            //  · Escritorio o sin soporte: descarga clásica (como siempre).
             const outName = `ixi4k_edit_${Date.now()}.mp4`;
-            const url = URL.createObjectURL(result.blob);
-            const anchor = document.createElement('a');
-            anchor.href = url;
-            anchor.download = outName;
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
-            window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+            const webSave =
+              isMobilePlatform() && canSaveToGallery()
+                ? await saveVideoToGallery(result.blob, outName)
+                : downloadVideoBlob(result.blob, outName);
 
             set({
               exportStatus: 'complete',
               isExporting: false,
               exportProgress: 100,
               exportedFilePath: outName,
+              exportedBlob: result.blob,
+              webSaveOutcome: webSave,
               showSuccessNotification: true,
               exportMeta: {
                 ...baseMeta,
@@ -728,6 +743,8 @@ export const useAppStore = create<AppState>()(
         isExporting: false,
         exportedFilePath: null,
         showSuccessNotification: false,
+        exportedBlob: null,
+        webSaveOutcome: null,
         exportMeta: null,
       }),
       openDownloadsFolder: async () => {
@@ -744,7 +761,9 @@ export const useAppStore = create<AppState>()(
         // Sin ruta exportada o fuera de Tauri no hay carpeta que abrir
         return false;
       },
-      dismissNotification: () => set({ showSuccessNotification: false }),
+      // Al descartar se libera el blob (puede ocupar cientos de MB en RAM)
+      dismissNotification: () =>
+        set({ showSuccessNotification: false, exportedBlob: null, webSaveOutcome: null }),
       updateExportSettings: (settings) => set(state => ({
         exportSettings: { ...state.exportSettings, ...settings }
       })),
