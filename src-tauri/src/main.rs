@@ -13,6 +13,10 @@ use tauri::Emitter;
 mod render;
 use render::RenderSettings;
 
+/// Super-resolución IA local (Real-ESRGAN · ncnn · Vulkan): estado, instalar
+/// y ejecutar — todo en la GPU del usuario, coste 0 € y sin servidores.
+mod ai_superres;
+
 // ---------------------------------------------------------------------------
 // Estado global: rate limiting de autenticación (5 intentos / 60 segundos)
 // ---------------------------------------------------------------------------
@@ -1147,8 +1151,14 @@ async fn process_video(
     let source = render::probe_source(&input).await?;
     let hw = render::detect_hardware().await;
     let mut plan = render::build_plan(&settings, &source, &hw);
-    // Comando real que se va a ejecutar (la UI lo muestra sin inventar nada)
-    plan.command = plan.command_display(&input, &output);
+    // Comando real que se va a ejecutar (la UI lo muestra sin inventar nada).
+    // En modo IA el pipeline son tres procesos (decodificar → Real-ESRGAN →
+    // codificar): se muestra el pipeline REAL, no un ffmpeg que no se ejecuta.
+    plan.command = if plan.upscaler.is_ai && plan.upscaled {
+        plan.ai_command_display(&input, &output)
+    } else {
+        plan.command_display(&input, &output)
+    };
     let output_str = output.to_string_lossy().to_string();
 
     let w = window.clone();
@@ -1161,6 +1171,25 @@ async fn process_video(
     let _ = window.emit("export-complete", &output_str);
     let _ = window.emit("export-report", &report);
     Ok(output_str)
+}
+
+/// Estado del motor de super-resolución IA (para la UI: instalado, GPU,
+/// requisitos y motivo honesto si no está disponible).
+#[tauri::command]
+async fn ai_status() -> Result<ai_superres::AiCapability, String> {
+    Ok(ai_superres::capability())
+}
+
+/// Descarga e instala el motor oficial (45 MB, MIT) UNA sola vez.
+/// Verifica requisitos ANTES de descargar y SHA-256 DESPUÉS.
+/// Emite `ai-install-progress` con `{percent: 0..100}`.
+#[tauri::command]
+async fn ai_install_engine(window: tauri::Window) -> Result<ai_superres::AiCapability, String> {
+    let w = window.clone();
+    let progress = std::sync::Arc::new(move |v: u8| {
+        let _ = w.emit("ai-install-progress", serde_json::json!({ "percent": v }));
+    });
+    ai_superres::install_engine(progress).await
 }
 
 #[tauri::command]
@@ -1477,6 +1506,8 @@ fn main() {
             list_admin_sessions,
             revoke_admin_session_by_id,
             revoke_other_admin_sessions,
+            ai_status,
+            ai_install_engine,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

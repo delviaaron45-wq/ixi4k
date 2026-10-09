@@ -72,6 +72,10 @@ pub struct RenderSettings {
     pub platform: String,
     /// 'auto' | 'lanczos' | 'ai'
     pub upscale_mode: String,
+    /// Modelo de super-resolución IA cuando upscale_mode = 'ai':
+    /// "" | "auto" (elige según VRAM) | "x4plus" | "animevideov3" | "x4plus-anime"
+    #[serde(default)]
+    pub ai_model: String,
     /// Cadenas EXACTAS del preset activo (Topaz / AE Pro / Cine…). Si existe,
     /// el motor usa estos valores en lugar de derivarlos de los sliders; al
     /// mover cualquier slider la UI la limpia y vuelven a mandar los sliders.
@@ -128,6 +132,7 @@ impl Default for RenderSettings {
             device_tier: "high".into(),
             platform: String::new(),
             upscale_mode: "auto".into(),
+            ai_model: String::new(),
             preset_filters: None,
         }
     }
@@ -1158,35 +1163,60 @@ pub struct UpscalerBackend {
     pub is_ai: bool,
 }
 
-/// Backends de escalado disponibles. Hoy: Lanczos (clásico).
-/// Integrar super-resolución AI = añadir una entrada aquí + su cadena de
-/// filtros en `RenderPlan` (el resto del motor no cambia).
+/// Backends de escalado disponibles:
+///   · Lanczos (clásico, siempre presente y respaldo garantizado)
+///   · IA · Real-ESRGAN (super-resolución neuronal en la GPU local; solo se
+///     selecciona si el motor está instalado y hay Vulkan — nunca se finge)
 pub fn available_upscalers() -> Vec<UpscalerBackend> {
-    vec![UpscalerBackend {
-        id: "lanczos",
-        label: "Lanczos (clásico)",
-        is_ai: false,
-    }]
+    vec![
+        UpscalerBackend {
+            id: "lanczos",
+            label: "Lanczos (clásico)",
+            is_ai: false,
+        },
+        UpscalerBackend {
+            id: "realesrgan",
+            label: "IA · Real-ESRGAN (GPU local)",
+            is_ai: true,
+        },
+    ]
 }
 
-fn select_upscaler(settings: &RenderSettings, notes: &mut Vec<String>) -> UpscalerBackend {
+/// Elige el escalador. `ai_ready` y `ai_reason` se pasan EXPLÍCITOS para que
+/// el comportamiento sea testeable sin depender del equipo:
+///   · "ai" + IA lista → Real-ESRGAN (red neuronal real, fotograma a fotograma)
+///   · "ai" sin IA     → Lanczos + motivo honesto (fallback, nunca error)
+///   · otro modo       → Lanczos (el usuario no pidió IA)
+fn select_upscaler(
+    settings: &RenderSettings,
+    notes: &mut Vec<String>,
+    upscaled: bool,
+    ai_ready: bool,
+    ai_reason: &str,
+) -> UpscalerBackend {
     let reg = available_upscalers();
     match settings.upscale_mode.as_str() {
-        "ai" => {
-            if let Some(ai) = reg.iter().find(|b| b.is_ai) {
-                *ai
-            } else {
+        "ai" if upscaled => {
+            if ai_ready {
                 notes.push(
-                    "Super-resolución AI no disponible en este dispositivo: se usa Lanczos (mejor alternativa compatible)".into(),
+                    "Super-resolución neuronal Real-ESRGAN aplicada fotograma a fotograma en la GPU (detalle sintetizado por IA, no por interpolación)"
+                        .into(),
                 );
+                reg[1]
+            } else {
+                notes.push(format!(
+                    "Super-resolución IA no disponible ({ai_reason}): se usa Lanczos (mejor alternativa compatible)"
+                ));
                 reg[0]
             }
         }
         _ => {
-            // Modo "auto" (toggle ON): honestidad sobre lo que realmente se aplica.
-            notes.push(
-                "Super-resolución por IA no disponible en este equipo: se usa Lanczos (reinterpolación de detalle — no crea información nueva de la cámara)".into(),
-            );
+            // Modo "auto"/"lanczos": honestidad sobre lo que realmente se aplica.
+            notes.push(if ai_ready {
+                "Escalado Lanczos + nitidez (IA local instalada pero NO activada en este export)".into()
+            } else {
+                "Super-resolución por IA no disponible en este equipo: se usa Lanczos (reinterpolación de detalle — no crea información nueva de la cámara)".into()
+            });
             reg[0]
         }
     }
@@ -1289,45 +1319,8 @@ impl RenderPlan {
             chain.extend(self.min_filters.iter().cloned());
         }
 
-        // Bloom del Filtro AE: la cadena ya filtrada se parte, se extraen las
-        // luces (umbral 145), se difuminan y se mezclan en `screen` SOLO en la
-        // luma (c1/c2 opacity 0 → el croma queda intacto, sin derivas de
-        // color). La variante mínima prescinde de él (máxima compatibilidad).
-        if self.settings.ae_edit && full_chain {
-            let sigma = ae_bloom_sigma(self.target_width, self.target_height);
-            // El tope de luma de la Fase 3 (min 235) se extrae de la cadena y
-            // se aplica DESPUÉS de la mezcla screen: si quedara antes, el
-            // bloom reencendería la imagen por encima del blanco legal y
-            // anularía parte del oscurecimiento del grading AE.
-            let mut head = chain.clone();
-            let cap_pos = head
-                .iter()
-                .position(|f| f.starts_with("lutyuv=y='min(val,"));
-            let cap = match cap_pos {
-                Some(i) => format!(",{}", head.remove(i)),
-                None => String::new(),
-            };
-            let graph = format!(
-                "[0:v]{chain},split[base][g0];\
-                 [g0]lutyuv=y='if(gt(val,{th}),(val-{th})*{gain},0)':u='val':v='val',gblur=sigma={sigma}[glow];\
-                 [base][glow]blend=c0_mode=screen:c0_opacity={op}:c1_mode=normal:c1_opacity=0:c2_mode=normal:c2_opacity=0{cap}[vout]",
-                chain = head.join(","),
-                th = AE_BLOOM_THRESHOLD,
-                gain = AE_BLOOM_GAIN,
-                sigma = sigma,
-                op = AE_BLOOM_OPACITY,
-            );
-            a.push("-filter_complex".into());
-            a.push(graph);
-            a.push("-map".into());
-            a.push("[vout]".into());
-            // Mantiene el audio original aunque la fuente no lo tenga («?»)
-            a.push("-map".into());
-            a.push("0:a?".into());
-        } else {
-            a.push("-vf".into());
-            a.push(chain.join(","));
-        }
+        // Bloom del Filtro AE / salida de filtros (ver `video_graph_args`)
+        a.extend(self.video_graph_args(&chain, full_chain, true));
 
         if self.caps.filter_threads > 0 {
             a.push("-filter_threads".into());
@@ -1368,6 +1361,321 @@ impl RenderPlan {
         a.push("-nostats".into());
         a.push(output.to_string_lossy().to_string());
         a
+    }
+
+    /// Argumentos que aplican `chain` al vídeo del input 0.
+    ///
+    /// · `bloom`      → si la cadena lleva el gráfico AE (split/gblur/screen)
+    /// · `with_audio` → añade `-map 0:a?` (sólo tiene sentido con un único
+    ///                  input; el pipeline IA usa false y coge el audio en el
+    ///                  codificador desde el fichero original).
+    fn video_graph_args(&self, chain: &[String], bloom: bool, with_audio: bool) -> Vec<String> {
+        let mut a: Vec<String> = Vec::new();
+        // Bloom del Filtro AE: la cadena ya filtrada se parte, se extraen las
+        // luces (umbral 145), se difuminan y se mezclan en `screen` SOLO en la
+        // luma (c1/c2 opacity 0 → el croma queda intacto, sin derivas de
+        // color). La variante mínima prescinde de él (máxima compatibilidad).
+        if self.settings.ae_edit && bloom {
+            let sigma = ae_bloom_sigma(self.target_width, self.target_height);
+            // El tope de luma de la Fase 3 (min 235) se extrae de la cadena y
+            // se aplica DESPUÉS de la mezcla screen: si quedara antes, el
+            // bloom reencendería la imagen por encima del blanco legal y
+            // anularía parte del oscurecimiento del grading AE.
+            let mut head = chain.to_vec();
+            let cap_pos = head
+                .iter()
+                .position(|f| f.starts_with("lutyuv=y='min(val,"));
+            let cap = match cap_pos {
+                Some(i) => format!(",{}", head.remove(i)),
+                None => String::new(),
+            };
+            let graph = format!(
+                "[0:v]{chain},split[base][g0];\
+                 [g0]lutyuv=y='if(gt(val,{th}),(val-{th})*{gain},0)':u='val':v='val',gblur=sigma={sigma}[glow];\
+                 [base][glow]blend=c0_mode=screen:c0_opacity={op}:c1_mode=normal:c1_opacity=0:c2_mode=normal:c2_opacity=0{cap}[vout]",
+                chain = head.join(","),
+                th = AE_BLOOM_THRESHOLD,
+                gain = AE_BLOOM_GAIN,
+                sigma = sigma,
+                op = AE_BLOOM_OPACITY,
+            );
+            a.push("-filter_complex".into());
+            a.push(graph);
+            a.push("-map".into());
+            a.push("[vout]".into());
+            if with_audio {
+                // Mantiene el audio original aunque la fuente no lo tenga («?»)
+                a.push("-map".into());
+                a.push("0:a?".into());
+            }
+        } else if !chain.is_empty() {
+            a.push("-vf".into());
+            a.push(chain.join(","));
+        }
+        a
+    }
+
+    // -------------------------------------------------------------------------
+    // Pipeline de super-resolución IA (Real-ESRGAN · ncnn · GPU local)
+    // -------------------------------------------------------------------------
+    // El escalado NO lo hace FFmpeg: la red neuronal lo hace por fotogramas.
+    // Aquí se calculan las dos mitades de la cadena que sí siguen en FFmpeg:
+    //   · pre  → antes de la IA (interpolación + denoise + color + grading)
+    //   · post → después de la IA (escala exacta al objetivo + CAS + Möbius…)
+
+    fn first_scale_index(&self) -> Option<usize> {
+        self.filters.iter().position(|f| f.starts_with("scale="))
+    }
+
+    /// Primer índice del bloque TÉCNICO final (`colorspace=` + `format=yuv420p`)
+    /// que cierra la cadena clásica.
+    fn tech_tail_index(&self) -> usize {
+        let mut i = self.filters.len();
+        while i > 0 {
+            let f = &self.filters[i - 1];
+            if f.starts_with("colorspace=") || f == "format=yuv420p" {
+                i -= 1;
+            } else {
+                break;
+            }
+        }
+        i
+    }
+
+    /// Partición de la cadena para el pipeline IA:
+    ///   · pre  → filtros a resolución de origen + cierre de color (el decodificador)
+    ///   · post → escala/crop/finos (el codificador, ya con la salida de la red)
+    pub fn ai_split_chains(&self, variant: Variant) -> (Vec<String>, Vec<String>) {
+        let full = variant != Variant::Minimal;
+        let filters: &[String] = if full { &self.filters } else { &self.min_filters };
+        let tail = self.tech_tail_index();
+        match self.first_scale_index() {
+            Some(s) if s < tail => {
+                let mut pre = filters[..s].to_vec();
+                // El cierre de color SÍ va en el decodificador: convierte la
+                // fuente a BT.709 en dominio YUV ANTES de pasar a RGB/IA
+                // (evita una doble conversión de color posterior).
+                pre.extend_from_slice(&filters[tail..]);
+                (pre, filters[s..tail].to_vec())
+            }
+            _ => (filters.to_vec(), Vec::new()),
+        }
+    }
+
+    /// Cadena PREVIA a la IA (la aplica el decodificador): interpolación de
+    /// FPS, todo el grading a resolución de origen y el cierre BT.709.
+    pub fn ai_pre_chain(&self, variant: Variant) -> Vec<String> {
+        let mut chain: Vec<String> = Vec::new();
+        if let Some(f) = self.interpolation_for(variant).filter() {
+            chain.push(f);
+        }
+        let (pre, _) = self.ai_split_chains(variant);
+        chain.extend(pre);
+        chain
+    }
+
+    /// Dimensiones REALES que emite el decodificador IA: el crop
+    /// anti-duplicado (primer filtro de la cadena) reduce el tamaño del
+    /// fotograma, así que el crudo rgb24 NO mide lo que mide la fuente.
+    /// Calcular mal este tamaño desincroniza el muestreo de fotogramas
+    /// (fotogramas «fantasma» y PSNR destruido), de aquí el cálculo explícito.
+    pub fn ai_decoder_dims(&self) -> (u32, u32) {
+        for f in self.ai_pre_chain(Variant::Full) {
+            if let Some(rest) = f.strip_prefix("crop=") {
+                let mut it = rest.split(':');
+                if let (Some(w), Some(h)) = (it.next(), it.next()) {
+                    if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                        if w > 0 && h > 0 {
+                            return (w, h);
+                        }
+                    }
+                }
+            }
+        }
+        (self.source.width, self.source.height)
+    }
+
+    /// Cadena POSTERIOR a la IA (la aplica el codificador): escala exacta
+    /// desde la salida de la red hasta el objetivo —aquí es donde RGB pasa a
+    /// YUV con la matriz BT.709 explícita— + recorte + filtros finales.
+    /// `ai_w`/`ai_h` = dimensiones que produce la red (origen × escala); el
+    /// `scale` siguiente lleva ESAS dimensiones exactamente al objetivo.
+    pub fn ai_post_chain(&self, _ai_w: u32, _ai_h: u32) -> Vec<String> {
+        let mut chain: Vec<String> = Vec::new();
+        let flags = if self.settings.lanczos {
+            "lanczos+accurate_rnd+full_chroma_int"
+        } else {
+            "bicubic+accurate_rnd+full_chroma_int"
+        };
+        // Escalado espacial + conversión RGB→YUV420p con matriz BT.709 y rango
+        // limitado EXPLÍCITOS (si no, FFmpeg elegiría BT.601 para un RGB sin
+        // etiquetar y los colores no cuadrarían con las etiquetas BT.709 de
+        // salida). El `format=yuv420p` final de esta cadena hace que la
+        // negociación fije ya la salida de `scale` en YUV420p, de modo que la
+        // conversión RGB→YUV ocurre AQUÍ (con nuestra matriz) y no en un
+        // conversor automático posterior. Verificado: negro→16, blanco→235.
+        chain.push(format!(
+            "scale={tw}:{th}:force_original_aspect_ratio=increase:flags={flags}:out_color_matrix=bt709:out_range=tv",
+            tw = self.target_width,
+            th = self.target_height,
+        ));
+        chain.push(format!(
+            "crop={}:{}",
+            self.target_width, self.target_height
+        ));
+
+        // Filtros posteriores al escalado (CAS, Möbius, límite de luma…)
+        let (_, post) = self.ai_split_chains(Variant::Full);
+        let crop = format!("crop={}:{}", self.target_width, self.target_height);
+        let mut seen_scale = false;
+        for f in &post {
+            if f.starts_with("scale=") {
+                seen_scale = true;
+                continue;
+            }
+            if seen_scale && *f == crop {
+                continue;
+            }
+            if seen_scale {
+                chain.push(f.clone());
+            }
+        }
+        // Cierre técnico: fija la salida en YUV420p (la pide el codificador).
+        // En la ruta clásica este cierre va después del tope de luma y antes
+        // del bloom; aquí cumple el mismo papel al final de la cadena post-IA.
+        chain.push("format=yuv420p".into());
+        chain
+    }
+
+    /// ffmpeg#1 del pipeline IA: decodifica + cadena previa → RGB crudo.
+    pub fn ai_decoder_args(&self, input: &Path) -> Vec<String> {
+        let mut a: Vec<String> = vec![
+            "-hide_banner".into(),
+            "-nostdin".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-y".into(),
+        ];
+        a.push("-i".into());
+        a.push(input.to_string_lossy().to_string());
+        // La cadena termina en RGB24 (lo que la red neuronal necesita).
+        // El bloom del Filtro AE NO va aquí: usa `lutyuv` (sólo YUV) y en la
+        // ruta IA se aplica en el codificador, sobre la cadena post-IA (mismo
+        // momento relativo que en la ruta clásica).
+        let mut pre = self.ai_pre_chain(Variant::Full);
+        pre.push("format=rgb24".into());
+        a.extend(self.video_graph_args(&pre, false, false));
+        if self.caps.filter_threads > 0 {
+            a.push("-filter_threads".into());
+            a.push(self.caps.filter_threads.to_string());
+        }
+        a.extend(
+            ["-f", "rawvideo", "-pix_fmt", "rgb24", "-an", "pipe:1"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        a
+    }
+
+    /// ffmpeg#2 del pipeline IA: image2pipe (PNG de la red) + cadena final +
+    /// mismo codificador y mismo audio que la ruta clásica.
+    /// `input` sólo se usa como fuente de audio (el vídeo llega por pipe).
+    pub fn ai_encoder_args(
+        &self,
+        input: &Path,
+        fps_rational: &str,
+        ai_w: u32,
+        ai_h: u32,
+        output: &Path,
+    ) -> Vec<String> {
+        let mut a: Vec<String> = vec![
+            "-hide_banner".into(),
+            "-nostdin".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-y".into(),
+        ];
+        // Entrada de vídeo por pipe (PNG concatenados que escribe Rust)
+        a.extend(
+            ["-f", "image2pipe", "-framerate", fps_rational, "-i", "pipe:0"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        // Entrada del original: SÓLO para el audio (misma sincronía que siempre)
+        a.push("-i".into());
+        a.push(input.to_string_lossy().to_string());
+
+        // Cadena post-IA (+ bloom del Filtro AE si está activo: se aplica aquí,
+        // tras el tope de luma, igual que en la ruta clásica). Con bloom,
+        // `video_graph_args` ya añade `-map [vout]`; sin él, el vídeo se mapea
+        // directamente desde la entrada 0 (el pipe de PNG de la red).
+        let post = self.ai_post_chain(ai_w, ai_h);
+        let bloom = self.settings.ae_edit;
+        a.extend(self.video_graph_args(&post, bloom, false));
+        if !bloom {
+            a.push("-map".into());
+            a.push("0:v:0".into());
+        }
+        a.push("-map".into());
+        a.push("1:a:0?".into());
+        if self.caps.filter_threads > 0 {
+            a.push("-filter_threads".into());
+            a.push(self.caps.filter_threads.to_string());
+        }
+
+        let enc = self.encoder_for(Variant::Full);
+        a.extend(encoder_args(
+            &enc,
+            self.settings.crf,
+            self.settings.bitrate_mbps,
+            &self.caps,
+        ));
+        a.push("-pix_fmt".into());
+        a.push("yuv420p".into());
+        a.push("-movflags".into());
+        a.push("+faststart".into());
+        a.push("-color_primaries".into());
+        a.push("bt709".into());
+        a.push("-color_trc".into());
+        a.push("bt709".into());
+        a.push("-colorspace".into());
+        a.push("bt709".into());
+        a.push("-g".into());
+        a.push(GOP_FRAMES.to_string());
+        let is_h264 = enc.id.starts_with("h264") || enc.id == "libx264";
+        if is_h264 {
+            a.push("-profile:v".into());
+            a.push("high".into());
+            a.push("-level:v".into());
+            a.push(
+                h264_level(self.target_width, self.target_height, self.output_fps).into(),
+            );
+        }
+        if self.has_audio {
+            a.push("-c:a".into());
+            a.push("aac".into());
+            a.push("-b:a".into());
+            a.push(format!("{}k", self.caps.audio_kbps));
+        }
+        a.push(output.to_string_lossy().to_string());
+        a
+    }
+
+    /// Comando REAL del pipeline IA (tres procesos) para mostrar en la UI.
+    pub fn ai_command_display(&self, input: &Path, output: &Path) -> String {
+        let cfg = crate::ai_superres::plan_run(self);
+        let ai_in = std::path::Path::new("«fotogramas»");
+        let ai_out = std::path::Path::new("«fotogramas_IA»");
+        let (dec_w, dec_h) = self.ai_decoder_dims();
+        let ai_w = dec_w * cfg.scale;
+        let ai_h = dec_h * cfg.scale;
+        format!(
+            "ffmpeg {} || {} || ffmpeg {}",
+            self.ai_decoder_args(input).join(" "),
+            crate::ai_superres::engine_command_display(&cfg, ai_in, ai_out),
+            self.ai_encoder_args(input, &format!("{}", self.output_fps), ai_w, ai_h, output)
+                .join(" "),
+        )
     }
 
     /// Variantes de reintento: de la ideal a la más compatible
@@ -1482,20 +1790,31 @@ pub fn build_plan(settings: &RenderSettings, source: &SourceInfo, hw: &HardwareP
     }
 
     // --- escalado ---
-    let upscaler = select_upscaler(settings, &mut notes);
     let ratio = {
         let src_long = source.width.max(source.height).max(1) as f64;
         let dst_long = tw.max(th) as f64;
         (dst_long / src_long).max(1.0)
     };
     let upscaled = ratio > 1.01;
+    let upscaler = select_upscaler(
+        settings,
+        &mut notes,
+        upscaled,
+        crate::ai_superres::is_engine_ready(),
+        &crate::ai_superres::unavailable_reason(),
+    );
     if upscaled {
-        notes.push(format!(
-            "Escala {}×{} → {tw}×{th} ({:.0}%): el detalle añadido es reinterpolado, la fuente no aporta resolución real nueva",
-            source.width,
-            source.height,
-            ratio * 100.0
-        ));
+        notes.push(if upscaler.is_ai {
+            format!(
+                "Escala {}×{} → {tw}×{th} ({:.0}%): el detalle extra lo sintetiza la red neuronal Real-ESRGAN (IA real, no interpolación); la fuente no aporta resolución óptica nueva",
+                source.width, source.height, ratio * 100.0
+            )
+        } else {
+            format!(
+                "Escala {}×{} → {tw}×{th} ({:.0}%): el detalle añadido es reinterpolado, la fuente no aporta resolución real nueva",
+                source.width, source.height, ratio * 100.0
+            )
+        });
     }
     if platform == "android" || platform == "ios" {
         notes.push(format!(
@@ -2079,6 +2398,77 @@ pub async fn run_render(
     output: &Path,
     mut on_progress: impl FnMut(&ProgressEvent) + Send,
 ) -> Result<RenderReport, String> {
+    // Emisor MONOTÓNICO: un reintento (IA o clásico) no debe rebobar la barra
+    // a 0 % tras avances reales; se queda en el último % alcanzado hasta que
+    // el nuevo intento lo supere. Así la barra de progreso NUNCA retrocede.
+    let mut last_pct: f64 = 0.0;
+    let mut emit = |ev: &ProgressEvent| {
+        let mut ev = ev.clone();
+        if ev.percent > last_pct {
+            last_pct = ev.percent;
+        } else {
+            ev.percent = last_pct;
+        }
+        on_progress(&ev);
+    };
+
+    // --- Super-resolución IA local (Real-ESRGAN) ---------------------------
+    // Si el plan pide IA y el equipo la soporta, se ejecuta el pipeline de
+    // red neuronal PRIMERO. Si algo falla (GPU, motor, disco…), se limpia la
+    // salida parcial y se continúa con la ruta clásica: el export NUNCA se
+    // queda sin resultado ni se finge IA.
+    if plan.upscaler.is_ai && plan.upscaled {
+        emit(&plan.progress_event(
+            "plan",
+            &format!(
+                "Preparando super-resolución IA ({}) en la GPU…",
+                plan.upscaler.id
+            ),
+        ));
+        let ai_result =
+            crate::ai_superres::run_superres(plan, input, output, None, &mut emit).await;
+        match ai_result {
+            Ok((frames, elapsed_ms)) => {
+                let cfg = crate::ai_superres::plan_run(plan);
+                let accel = format!(
+                    "IA · Real-ESRGAN ×{} · {}",
+                    cfg.scale,
+                    crate::ai_superres::capability()
+                        .gpu_name
+                        .unwrap_or_else(|| "GPU Vulkan".into())
+                );
+                let mut ev = plan.progress_event("done", "¡Completado!");
+                ev.percent = 100.0;
+                ev.frame = frames;
+                ev.acceleration = accel.clone();
+                ev.encoder = plan.encoder_for(Variant::Full).id.into();
+                emit(&ev);
+                return Ok(RenderReport {
+                    output: output.to_string_lossy().to_string(),
+                    elapsed_ms,
+                    frames,
+                    encoder: plan.encoder_for(Variant::Full).id.into(),
+                    acceleration: accel,
+                    target_width: plan.target_width,
+                    target_height: plan.target_height,
+                    output_fps: plan.output_fps,
+                    upscaled: plan.upscaled,
+                    variant: Variant::Full,
+                });
+            }
+            Err(ai_err) => {
+                let _ = tokio::fs::remove_file(output).await;
+                emit(&ProgressEvent {
+                    phase: "retry".into(),
+                    label: format!(
+                        "IA no disponible ({ai_err}) → se usa la mejor alternativa compatible (Lanczos)…"
+                    ),
+                    ..plan.progress_event("retry", "")
+                });
+            }
+        }
+    }
+
     let variants = plan.variants();
     let mut last_err = String::from("Sin intentos disponibles");
 
@@ -2086,11 +2476,11 @@ pub async fn run_render(
         let is_last = i + 1 == variants.len();
         // El primer intento emite el plan (resolución, aceleración…)
         if i == 0 {
-            on_progress(&plan.progress_event("plan", "Analizando vídeo…"));
+            emit(&plan.progress_event("plan", "Analizando vídeo…"));
         }
         let phase = if i == 0 { "processing" } else { "retry" };
         if i > 0 {
-            on_progress(&ProgressEvent {
+            emit(&ProgressEvent {
                 phase: phase.into(),
                 percent: 0.0,
                 frame: 0,
@@ -2112,7 +2502,7 @@ pub async fn run_render(
             input,
             output,
             plan.source.duration_sec,
-            &mut on_progress,
+            &mut emit,
         )
         .await
         {
@@ -2122,7 +2512,7 @@ pub async fn run_render(
                 ev.percent = 100.0;
                 ev.acceleration = enc.label.into();
                 ev.encoder = enc.id.into();
-                on_progress(&ev);
+                emit(&ev);
                 return Ok(RenderReport {
                     output: output.to_string_lossy().to_string(),
                     elapsed_ms,
@@ -2755,14 +3145,43 @@ mod tests {
 
     #[test]
     fn ai_upscale_falls_back_to_lanczos_instead_of_failing() {
+        // Motor IA NO disponible (equipo sin Vulkan / sin instalar) → el plan
+        // debe caer a Lanczos con un motivo honesto, nunca fallar el export.
         let s = RenderSettings {
             upscale_mode: "ai".into(),
             ..Default::default()
         };
+        let mut notes = Vec::new();
+        let up = select_upscaler(&s, &mut notes, true, false, "GPU no compatible");
+        assert!(!up.is_ai);
+        assert!(notes.iter().any(|n| n.contains("IA no disponible")));
+        assert!(notes.iter().any(|n| n.contains("GPU no compatible")));
+
+        // Mismo caso pero a través de build_plan: filtros Lanczos presentes.
         let plan = build_plan(&s, &src(720, 1280, 30.0, 5.0), &hw());
-        assert!(!plan.upscaler.is_ai);
-        assert!(plan.notes.iter().any(|n| n.contains("AI no disponible")));
-        assert!(plan.filters.iter().any(|f| f.contains("flags=lanczos")));
+        if !plan.upscaler.is_ai {
+            assert!(plan.notes.iter().any(|n| n.contains("IA no disponible")));
+            assert!(plan.filters.iter().any(|f| f.contains("flags=lanczos")));
+        }
+    }
+
+    #[test]
+    fn ai_upscale_selects_realesrgan_when_engine_ready() {
+        // Motor IA instalado + Vulkan → se selecciona Real-ESRGAN de verdad.
+        let s = RenderSettings {
+            upscale_mode: "ai".into(),
+            ..Default::default()
+        };
+        let mut notes = Vec::new();
+        let up = select_upscaler(&s, &mut notes, true, true, "");
+        assert!(up.is_ai);
+        assert_eq!(up.id, "realesrgan");
+        assert!(notes.iter().any(|n| n.contains("Real-ESRGAN")));
+
+        // Sin escalado que hacer (objetivo ≤ origen) → no se invoca la IA.
+        let mut notes2 = Vec::new();
+        let up2 = select_upscaler(&s, &mut notes2, false, true, "");
+        assert!(!up2.is_ai);
     }
 
     #[test]
@@ -2871,14 +3290,22 @@ mod tests {
 
     #[test]
     fn select_upscaler_auto_notes_honest_fallback() {
+        // Modo "auto" SIN IA instalada → nota honesta "IA no disponible".
         let mut notes = Vec::new();
         let s = RenderSettings {
             upscale_mode: "auto".into(),
             ..Default::default()
         };
-        let up = select_upscaler(&s, &mut notes);
+        let up = select_upscaler(&s, &mut notes, true, false, "motor no instalado");
         assert!(!up.is_ai);
         assert!(notes.iter().any(|n| n.contains("IA no disponible")));
+
+        // Modo "auto" CON IA instalada → sigue siendo Lanczos (el usuario no
+        // la pidió), pero la nota dice la verdad: está instalada, no activada.
+        let mut notes2 = Vec::new();
+        let up2 = select_upscaler(&s, &mut notes2, true, true, "");
+        assert!(!up2.is_ai);
+        assert!(notes2.iter().any(|n| n.contains("NO activada")));
     }
 
     // ---------------------- integración (FFmpeg) ----------------------
@@ -3092,7 +3519,10 @@ mod tests {
         assert_eq!(last.phase, "done");
         assert_eq!(last.percent, 100.0);
         let percents: Vec<f64> = events.iter().map(|e| e.percent).collect();
-        assert!(percents.windows(2).all(|w| w[1] >= w[0] - 1e-6), "porcentaje monótono");
+        assert!(
+            percents.windows(2).all(|w| w[1] >= w[0] - 1e-6),
+            "porcentaje monótono: {percents:?}"
+        );
         // Regresión: el % debe propagarse entre líneas de `-progress` (antes,
         // las líneas `frame=`/`speed=` emitían percent=0 y la UI se quedaba en 0)
         assert!(

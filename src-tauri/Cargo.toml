@@ -27,6 +27,11 @@ futures = "0.3"
 hmac = "0.12"
 sha1 = "0.10"
 data-encoding = "2"
+# --- Super-resolución IA local (Real-ESRGAN · ncnn · Vulkan) — coste 0 € ---
+# Descarga DEL MOTOR OFICIAL una sola vez (45 MB, MIT) y verificación SHA-256.
+sha2 = "0.10"     # ya presente en el árbol de dependencias (nada nuevo que compilar)
+zip = { version = "2", default-features = false, features = ["deflate"] }
+ureq = "3"        # cliente HTTPS mínimo (rustls) para el instalador del motor
 
 [features]
 default = ["custom-protocol"]

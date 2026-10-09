@@ -216,6 +216,13 @@ export interface ProcessingOptions {
   interpolate60fps: boolean;
   tiktokPreset: boolean;
   /**
+   * Super-resolución IA local (Real-ESRGAN en la GPU, vía motor ncnn).
+   * Opcional porque el storage antiguo no lo traía: al leer, `undefined`
+   * interpreta como DESACTIVADO (nunca se gasta GPU sin que el usuario lo
+   * pida; si el motor falta, el backend cae a Lanczos y lo dice en el plan).
+   */
+  aiUpscale?: boolean;
+  /**
    * Firma anti-duplicado (anti-shadowban): micro-zoom 1.5 % que hace única
    * la salida. Opcional porque el storage antiguo no lo traía: al leer se
    * interpreta `undefined` como activado (misma default que render.rs).
@@ -303,6 +310,7 @@ const defaultOptions: ProcessingOptions = {
   colorCorrection: true,
   interpolate60fps: true,
   tiktokPreset: true,
+  aiUpscale: false,
   antiDuplicate: true,
 };
 

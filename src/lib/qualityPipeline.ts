@@ -396,6 +396,8 @@ export interface BuildRenderSettingsInput {
     colorCorrection: boolean;
     interpolate60fps: boolean;
     tiktokPreset: boolean;
+    /** Super-resolución IA local (Real-ESRGAN). Ausente = desactivado. */
+    aiUpscale?: boolean;
     /** Firma anti-duplicado (anti-shadowban). Ausente = activada (como Rust). */
     antiDuplicate?: boolean;
   };
@@ -435,7 +437,11 @@ export function buildRenderSettings(input: BuildRenderSettingsInput): RenderSett
     tiktokPreset: processingOptions.tiktokPreset,
     deviceTier,
     platform,
-    upscaleMode: processingOptions.superResolution ? 'auto' : 'lanczos',
+    upscaleMode: processingOptions.aiUpscale
+      ? 'ai'
+      : processingOptions.superResolution
+        ? 'auto'
+        : 'lanczos',
   };
 }
 
@@ -507,9 +513,10 @@ export function describeRenderPlan(
   if (settings.mobius) parts.push('mapa de tonos Möbius');
   if (settings.hdrConvert) parts.push('HDR→BT.709');
   const ratio = upscaleRatio(settings, source);
+  const aiMode = settings.upscaleMode === 'ai';
   parts.push(
     ratio > 1.01
-      ? `escala ${source ? `${source.width}×${source.height}` : 'origen'} → ${dims.width}×${dims.height}`
+      ? `escala ${source ? `${source.width}×${source.height}` : 'origen'} → ${dims.width}×${dims.height}${aiMode ? ' (IA Real-ESRGAN)' : ''}`
       : `escala ${dims.width}×${dims.height}`
   );
   if (pf?.cas !== undefined) {
@@ -539,6 +546,9 @@ export function upscaleNote(
 ): string | null {
   const ratio = upscaleRatio(settings, source);
   if (!source || ratio <= 1.01) return null;
+  if (settings.upscaleMode === 'ai') {
+    return `La fuente es ${source.width}×${source.height}: se escala a ${Math.round(ratio * 100)}% con la red neuronal Real-ESRGAN en tu GPU (sintetiza detalle plausible; tampoco crea información real de la cámara). Si el motor de IA no está instalado, el export usa Lanczos y te lo indica en el plan.`;
+  }
   return `La fuente es ${source.width}×${source.height}: se escala a ${Math.round(ratio * 100)}% con reinterpolación de detalle (no crea información real de la cámara).`;
 }
 
