@@ -339,15 +339,17 @@ export function AdminLogin({ onClose }: AdminLoginProps) {
         </form>
 
         <p className="text-xs text-ixi-textMuted text-center mt-6 leading-relaxed">
-          {import.meta.env.MODE === 'development' && !import.meta.env.VITE_SUPABASE_URL ? (
+          {!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY ? (
             <>
-              ⚠️ Modo desarrollo sin Supabase Auth — configura{' '}
-              <span className="text-ixi-cyan font-mono">VITE_SUPABASE_URL</span> para JWT real
+              ⚠️ Supabase Auth sin configurar — añade{' '}
+              <span className="text-ixi-cyan font-mono">VITE_SUPABASE_URL</span> y{' '}
+              <span className="text-ixi-cyan font-mono">VITE_SUPABASE_ANON_KEY</span> y
+              redespliega para habilitar el acceso en la web
             </>
           ) : (
             <>
-              🔐 Sesión cifrada en el gestor de credenciales del sistema — Cada intento queda
-              registrado
+              🔐 Credenciales verificadas en el servidor (Supabase Auth) — Sesión caducada
+              automáticamente al cerrar la pestaña
             </>
           )}
         </p>

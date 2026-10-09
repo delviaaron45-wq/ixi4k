@@ -229,8 +229,13 @@ export const useAdminStore = create<AdminState>()(
       // (la sesión/token la emitió el backend en `resolveLoginRole`)
       // ------------------------------------------------------------------
       setAdminSession: async (session) => {
-        // Defensa en profundidad: sin emisor válido no hay panel admin
-        if (!session?.accessToken || session.provider !== 'backend') return;
+        // Defensa en profundidad: sin emisor válido no hay panel admin.
+        // - `backend`: token opaco emitido por el proceso Rust.
+        // - `supabase`: JWT emitido por Supabase Auth → se verifica SIEMPRE
+        //   contra el servidor (rol admin en app_metadata) antes de abrir.
+        if (!session?.accessToken) return;
+        if (session.provider !== 'backend' && session.provider !== 'supabase') return;
+        if (session.provider === 'supabase' && !(await validateAdminSession(session))) return;
 
         await persistSession(session);
         set({
@@ -246,13 +251,20 @@ export const useAdminStore = create<AdminState>()(
           severity: 'info',
           userId: session.user.id,
           userEmail: session.user.email,
-          details: 'Acceso al Panel Admin concedido (token de sesión emitido por el backend, rol admin)',
+          details: `Acceso al Panel Admin concedido (${
+            session.provider === 'backend'
+              ? 'token de sesión emitido por el backend'
+              : 'JWT verificado por el servidor Supabase'
+          }, rol admin)`,
         });
         get().addAuditLog({
           userId: session.user.id,
           userEmail: session.user.email,
           action: 'Admin login',
-          details: 'Administrador autenticado con token emitido por el backend',
+          details:
+            session.provider === 'backend'
+              ? 'Administrador autenticado con token emitido por el backend'
+              : 'Administrador autenticado con sesión Supabase Auth verificada en el servidor',
           type: 'admin',
         });
       },
@@ -395,8 +407,9 @@ export const useAdminStore = create<AdminState>()(
           !!userEmail &&
           userEmail.trim().toLowerCase() === session.user.email.trim().toLowerCase();
 
-        // El backend revalida el token: no se confía en lo que haya en el
-        // navegador (keyring, localStorage o storage alterado).
+        // El servidor revalida el token (Supabase `GET /auth/v1/user` o backend
+        // Rust): no se confía en lo que haya en el navegador (keyring,
+        // sessionStorage o storage alterado).
         if (sameAccount && (await validateAdminSession(session))) {
           set({
             isAdminAuthenticated: true,
@@ -408,7 +421,7 @@ export const useAdminStore = create<AdminState>()(
             severity: 'info',
             userId: session.user.id,
             userEmail: session.user.email,
-            details: 'Sesión admin restaurada y validada por el backend (keyring)',
+            details: 'Sesión admin restaurada y revalidada por el servidor',
           });
         } else {
           // Token caducado/revocado, no emitido por el backend o perteneciente

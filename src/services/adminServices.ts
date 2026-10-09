@@ -218,7 +218,7 @@ export async function checkLocalServices(): Promise<ServicesReport> {
     checks.push({
       id: 'backend',
       name: 'Backend nativo (Rust/Tauri)',
-      detail: 'No disponible en el navegador — usa la app de escritorio',
+      detail: 'Funciones nativas no disponibles en la web (el resto del panel opera con normalidad)',
       status: 'unavailable',
     });
     // Exportación WebCodecs del navegador

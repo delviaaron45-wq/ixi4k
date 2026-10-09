@@ -8,21 +8,24 @@
  *   - macOS: Keychain
  *   - Linux: Secret Service
  *
- * En modo navegador (desarrollo) la sesión vive SOLO en memoria (RAM)
- * y se pierde al recargar, evitando fugas por localStorage/XSS.
+ * En el navegador la sesión vive en sessionStorage (POR PESTAÑA):
+ *   - sobrevive a un recargado de página (F5) → no expulsa al administrador,
+ *   - desaparece al cerrar la pestaña → cierre de sesión automático,
+ *   - no es compartido entre pestañas ni sobrevive al cierre del navegador,
+ *   - jamás se escribe en localStorage (que sí persiste y se comparte).
  */
 
 import type { AdminSession } from './authService';
 
 const STORE_KEY = 'admin_session';
 
-// Sesión en memoria (solo navegador) — jamás se escribe en localStorage
+// Sesión en memoria (respaldo si sessionStorage no está disponible)
 let memorySession: AdminSession | null = null;
 
 const isTauri = (): boolean =>
   typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
 
-type StorageBackend = 'keyring' | 'memory';
+type StorageBackend = 'keyring' | 'sessionStorage' | 'memory';
 
 export async function persistSession(session: AdminSession): Promise<StorageBackend> {
   if (isTauri()) {
@@ -34,11 +37,17 @@ export async function persistSession(session: AdminSession): Promise<StorageBack
       });
       return 'keyring';
     } catch (err) {
-      console.warn('[SecureSession] Keyring no disponible, usando memoria:', err);
+      console.warn('[SecureSession] Keyring no disponible, usando sessionStorage:', err);
     }
   }
   memorySession = session;
-  return 'memory';
+  try {
+    sessionStorage.setItem(STORE_KEY, JSON.stringify(session));
+    return 'sessionStorage';
+  } catch {
+    // Sin sessionStorage (modo privado restringido): solo memoria
+    return 'memory';
+  }
 }
 
 export async function loadSession(): Promise<AdminSession | null> {
@@ -50,12 +59,29 @@ export async function loadSession(): Promise<AdminSession | null> {
     } catch {
       // keyring no disponible → fallback memoria
     }
+    return memorySession;
   }
-  return memorySession;
+  if (memorySession) return memorySession;
+  try {
+    const raw = sessionStorage.getItem(STORE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as AdminSession;
+      memorySession = parsed;
+      return parsed;
+    }
+  } catch {
+    // Sin sessionStorage o dato corrupto → sin sesión
+  }
+  return null;
 }
 
 export async function wipeSession(): Promise<void> {
   memorySession = null;
+  try {
+    sessionStorage.removeItem(STORE_KEY);
+  } catch {
+    // Sin sessionStorage: la sesión en memoria ya fue borrada
+  }
   if (isTauri()) {
     try {
       const { invoke } = await import('@tauri-apps/api/core');

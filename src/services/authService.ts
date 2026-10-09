@@ -37,12 +37,22 @@
  *   VITE_SUPABASE_ANON_KEY=eyJhbGciOi...
  */
 
+import { persistSession } from './secureSession';
+
 const ACCESS_DENIED_MESSAGE =
   'Acceso No Autorizado: Credenciales de Administrador Incorrectas';
 
-/** El backend nativo no tiene configurada ninguna fuente de credenciales */
-const ADMIN_NOT_CONFIGURED_MESSAGE =
-  'Acceso administrador no disponible en la web: usa la app de escritorio o configura Supabase Auth';
+/**
+ * Web (navegador): no hay ningún proveedor de autenticación configurado.
+ * NO es una limitación de plataforma — el acceso web se habilita añadiendo
+ * las variables de Supabase Auth (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).
+ */
+const WEB_AUTH_NOT_CONFIGURED_MESSAGE =
+  'Autenticación no configurada en el servidor: añade VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY (Supabase Auth) para habilitar el acceso de administrador en la web';
+
+/** App de escritorio sin credenciales de administrador configuradas. */
+const NATIVE_AUTH_NOT_CONFIGURED_MESSAGE =
+  'Autenticación no configurada: ejecuta «npm run admin:setup» para crear las credenciales de administrador';
 
 export interface AdminSession {
   accessToken: string;
@@ -85,11 +95,45 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // ---------------------------------------------------------------------------
-// Rate Limiting: 5 intentos como máximo por ventana de 60 segundos
+// Rate Limiting: 5 intentos fallidos como máximo por ventana de 60 segundos
+//
+// Los intentos se persisten en `sessionStorage` (por pestaña): recargar la
+// página NO reinicia el contador, por lo que el bloqueo anti fuerza bruta
+// sobrevive a un F5. Al cerrar la pestaña el contador desaparece.
 // ---------------------------------------------------------------------------
 const MAX_ATTEMPTS = 5;
 const WINDOW_MS = 60_000;
-let attemptTimestamps: number[] = [];
+const RATE_STORAGE_KEY = 'ixi4k_auth_rate_limit';
+
+function readAttempts(): number[] {
+  if (typeof sessionStorage === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem(RATE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((n): n is number => typeof n === 'number' && n > 0);
+  } catch {
+    return [];
+  }
+}
+
+function writeAttempts(list: number[]): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(RATE_STORAGE_KEY, JSON.stringify(list));
+  } catch {
+    // Sin sessionStorage: el contador sigue en memoria durante la sesión
+  }
+}
+
+let attemptTimestamps: number[] = readAttempts();
+
+function pruneAttempts(): number[] {
+  const now = Date.now();
+  attemptTimestamps = attemptTimestamps.filter((t) => now - t < WINDOW_MS);
+  return attemptTimestamps;
+}
 
 export interface RateLimitState {
   used: number;
@@ -99,24 +143,41 @@ export interface RateLimitState {
 }
 
 export function getRateLimitState(): RateLimitState {
+  const pruned = pruneAttempts();
   const now = Date.now();
-  attemptTimestamps = attemptTimestamps.filter((t) => now - t < WINDOW_MS);
-  const used = attemptTimestamps.length;
+  const used = pruned.length;
   const locked = used >= MAX_ATTEMPTS;
   const retryAfter = locked
-    ? Math.ceil((WINDOW_MS - (now - attemptTimestamps[0])) / 1000)
+    ? Math.ceil((WINDOW_MS - (now - pruned[0])) / 1000)
     : 0;
   return {
     used,
     remaining: Math.max(0, MAX_ATTEMPTS - used),
     locked,
-    retryAfter,
+    retryAfter: Math.max(0, retryAfter),
   };
 }
 
-function recordLocalAttempt(): void {
+/** Lanza el error de bloqueo si la ventana de rate limiting está activa. */
+function assertNotRateLimited(): void {
+  const state = getRateLimitState();
+  if (state.locked) {
+    throw new AuthError('RATE_LIMITED', 'Demasiados intentos de acceso', state.retryAfter);
+  }
+}
+
+/** Registra un intento FALLIDO (compartido entre todos los puntos de login). */
+function recordFailedAttempt(): void {
+  pruneAttempts();
   attemptTimestamps.push(Date.now());
   if (attemptTimestamps.length > 50) attemptTimestamps = attemptTimestamps.slice(-50);
+  writeAttempts(attemptTimestamps);
+}
+
+/** Un acceso correcto reinicia la ventana: solo se penalizan los fallos. */
+function clearFailedAttempts(): void {
+  attemptTimestamps = [];
+  writeAttempts(attemptTimestamps);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +216,14 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
   }
 }
 
+/**
+ * Lee el rol del payload del JWT (SOLO lectura informativa para la UI).
+ *
+ * ATENCIÓN: decodificar el payload NO verifica la firma, por lo que este
+ * dato es manipulable desde el navegador. Las decisiones de seguridad (rol
+ * admin, apertura del panel, RLS) se toman SIEMPRE con respuestas del
+ * servidor: endpoint de login, `GET /auth/v1/user` y políticas RLS.
+ */
 export function hasAdminClaim(session: AdminSession): boolean {
   const payload = decodeJwtPayload(session.accessToken);
   if (!payload) return false;
@@ -168,7 +237,11 @@ export function hasAdminClaim(session: AdminSession): boolean {
 /**
  * Valida la sesión de administrador — SIEMPRE con ayuda del backend.
  *
- * - Sesión `supabase`: caducidad + claim de rol emitido por el servidor.
+ * - Sesión `supabase`: se renueva el token si caducó (refresh token) y se
+ *   verifica contra el SERVIDOR de Supabase (`GET /auth/v1/user`): quien
+ *   responde es el servidor validando la firma del JWT, nunca el navegador.
+ *   El rol admin se lee de la respuesta del servidor (app_metadata), que es
+ *   imposible de manipular desde el cliente.
  * - Sesión `backend`: se envía el token al proceso Rust, que comprueba que lo
  *   emitió él y que no ha caducado. Un token inventado o copiado del navegador
  *   (localStorage, keyring, URL…) es rechazado.
@@ -176,10 +249,10 @@ export function hasAdminClaim(session: AdminSession): boolean {
  */
 export async function validateAdminSession(session: AdminSession | null): Promise<boolean> {
   if (!session || !session.accessToken) return false;
+
+  if (session.provider === 'supabase') return validateSupabaseSessionWithServer(session);
+
   if (session.expiresAt <= Date.now() + 5_000) return false;
-
-  if (session.provider === 'supabase') return hasAdminClaim(session);
-
   if (session.provider !== 'backend' || !isTauri()) return false;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -189,8 +262,104 @@ export async function validateAdminSession(session: AdminSession | null): Promis
   }
 }
 
-/** Revoca en el backend la sesión nativa (logout del administrador). */
+/**
+ * Verificación server-side de una sesión Supabase:
+ *  1. Si el access token caducó (o está a punto de), se renueva con el
+ *     refresh token y la sesión renovada se guarda (persistSession).
+ *  2. Se consulta `GET /auth/v1/user` con el token: el servidor Supabase
+ *     valida la firma del JWT y devuelve el usuario real con su rol.
+ *  3. Solo devuelve `true` si el servidor indica rol admin.
+ */
+async function validateSupabaseSessionWithServer(session: AdminSession): Promise<boolean> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return false;
+
+  // 1) Renovación silenciosa si el access token ya caducó
+  if (session.expiresAt <= Date.now() + 30_000) {
+    const renewed = await renewSupabaseSession(session);
+    if (!renewed) return false;
+  }
+
+  // 2) Verificación en el servidor (firma del JWT validada por Supabase)
+  let res: Response;
+  try {
+    res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${session.accessToken}`,
+      },
+    });
+  } catch {
+    return false;
+  }
+  if (!res.ok) return false;
+
+  // 3) El rol sale de la RESPUESTA DEL SERVIDOR, no de un payload del cliente
+  try {
+    const user = (await res.json()) as {
+      app_metadata?: { role?: string };
+      user_metadata?: { role?: string };
+    };
+    const role = user.app_metadata?.role ?? user.user_metadata?.role;
+    return role === 'admin';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Renueva el access token de una sesión Supabase con su refresh token y
+ * persiste la sesión resultante. Devuelve `false` si Supabase la rechaza
+ * (sesión revocada, refresh caducado o red caída → hay que volver a entrar).
+ */
+async function renewSupabaseSession(session: AdminSession): Promise<boolean> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !session.refreshToken) return false;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ refresh_token: session.refreshToken }),
+    });
+    if (!res.ok) return false;
+
+    const data = (await res.json()) as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+    // Se actualiza EN EL MISMO objeto: el store conserva la referencia viva
+    session.accessToken = data.access_token;
+    if (data.refresh_token) session.refreshToken = data.refresh_token;
+    session.expiresAt = Date.now() + (data.expires_in ?? 3600) * 1000;
+    await persistSession(session);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Revoca la sesión de administrador en el backend que la emitió. */
 export async function revokeAdminSession(session: AdminSession): Promise<void> {
+  // Supabase Auth: cierre de sesión en el SERVIDOR (invalida el refresh token
+  // para que la sesión no pueda reanimarse desde otro dispositivo).
+  if (session.provider === 'supabase') {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+    try {
+      await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${session.accessToken}`,
+        },
+      });
+    } catch {
+      // Sin red: el token caduca por su propia expiración (corta)
+    }
+    return;
+  }
+
   if (session.provider !== 'backend' || !isTauri()) return;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -316,13 +485,23 @@ export async function resolveLoginRole(email: string, password: string): Promise
     }
   }
 
-  // 2) Web con Supabase Auth: el rol lo emite el servidor en el JWT
+  // 2) Web con Supabase Auth: el rol lo decide el SERVIDOR en su respuesta
   if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+    // Ventana anti fuerza bruta compartida con el Panel Admin: mientras dure
+    // el bloqueo no se resuelve el rol admin (el login normal no se ve afectado)
+    if (getRateLimitState().locked) return { role: 'user' };
     try {
       const session = await supabasePasswordLogin(email, password);
+      clearFailedAttempts();
       return { role: 'admin', session };
-    } catch {
-      // Sin rol admin, credenciales no válidas o red caída → usuario normal
+    } catch (err) {
+      // Credenciales inválidas → intento fallido (así la pantalla de login
+      // normal NO elude el rate limiting del Panel Admin). Una cuenta válida
+      // sin rol admin no penaliza: es un usuario legítimo.
+      if (err instanceof AuthError && err.code === 'INVALID_CREDENTIALS') {
+        recordFailedAttempt();
+      }
+      // Sin rol admin o red caída → usuario normal
       // (el login normal de ixi 4k sigue funcionando igual que siempre)
       return { role: 'user' };
     }
@@ -342,12 +521,9 @@ export async function resolveLoginRole(email: string, password: string): Promise
 // vuelta. Sin backend y sin proveedor → acceso denegado.
 // ---------------------------------------------------------------------------
 export async function signInAdmin(email: string, password: string): Promise<AdminSession> {
-  // Capa 1: rate limiting local
-  const local = getRateLimitState();
-  if (local.locked) {
-    throw new AuthError('RATE_LIMITED', 'Demasiados intentos de acceso', local.retryAfter);
-  }
-  recordLocalAttempt();
+  // Capa 1: rate limiting local (compartido con la pantalla de login normal;
+  // persistido en sessionStorage, por lo que un recargado NO reinicia el contador)
+  assertNotRateLimited();
 
   // Capa 2: rate limiting nativo (Rust)
   await nativeRateCheck();
@@ -371,37 +547,59 @@ export async function signInAdmin(email: string, password: string): Promise<Admi
             result.token
           );
         }
+        clearFailedAttempts();
         return buildBackendSession(email.trim().toLowerCase(), result.token, result.expiresAt);
       }
       throw new AuthError('INVALID_CREDENTIALS', ACCESS_DENIED_MESSAGE);
     } catch (err) {
-      if (err instanceof AuthError) throw err;
+      if (err instanceof AuthError) {
+        if (err.code === 'INVALID_CREDENTIALS') recordFailedAttempt();
+        throw err;
+      }
       const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
       if (msg.includes('ADMIN_NOT_CONFIGURED')) {
         // Sin secretos configurados en el backend → error explícito (no se
         // intenta ningún otro método que pueda exponer credenciales)
-        throw new AuthError('AUTH_NOT_CONFIGURED', ADMIN_NOT_CONFIGURED_MESSAGE);
+        throw new AuthError('AUTH_NOT_CONFIGURED', NATIVE_AUTH_NOT_CONFIGURED_MESSAGE);
       }
       if (msg.includes('RATE_LIMITED')) {
         const seconds = Number(msg.split(':')[1]) || 60;
         throw new AuthError('RATE_LIMITED', 'Demasiados intentos de acceso', seconds);
       }
+      recordFailedAttempt();
       // Cualquier otro fallo → se continúa con el proveedor (si existe)
     }
   }
 
-  // 2) Proveedor de autenticación (Supabase Auth) si está configurado
+  // 2) Proveedor de autenticación (Supabase Auth) si está configurado.
+  //    El navegador envía las credenciales al SERVIDOR de Supabase: allí se
+  //    verifican y solo un usuario con rol admin recibe un JWT válido.
   if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-    return supabasePasswordLogin(email, password);
+    try {
+      const session = await supabasePasswordLogin(email, password);
+      clearFailedAttempts();
+      return session;
+    } catch (err) {
+      // Solo los fallos de credenciales cuentan como intento fallido:
+      // una cuenta válida sin rol admin no está siendo atacada.
+      if (
+        err instanceof AuthError &&
+        (err.code === 'INVALID_CREDENTIALS' || err.code === 'NO_ADMIN_ROLE')
+      ) {
+        recordFailedAttempt();
+      }
+      throw err;
+    }
   }
 
   // 3) Web sin proveedor de autenticación → no existe ningún método seguro
   //    de verificación en el navegador (no se lleva ningún secreto al bundle)
   if (!isTauri()) {
-    throw new AuthError('AUTH_NOT_CONFIGURED', ADMIN_NOT_CONFIGURED_MESSAGE);
+    throw new AuthError('AUTH_NOT_CONFIGURED', WEB_AUTH_NOT_CONFIGURED_MESSAGE);
   }
 
   // 4) Credenciales incorrectas → rechazo de auditoría
+  recordFailedAttempt();
   throw new AuthError('INVALID_CREDENTIALS', ACCESS_DENIED_MESSAGE);
 }
 
@@ -416,7 +614,10 @@ export async function completeTwoFactorLogin(
   code: string
 ): Promise<AdminSession> {
   if (!isTauri()) {
-    throw new AuthError('AUTH_NOT_CONFIGURED', ADMIN_NOT_CONFIGURED_MESSAGE);
+    throw new AuthError(
+      'AUTH_NOT_CONFIGURED',
+      'Verificación en dos pasos (2FA) no disponible en la web: vuelve a iniciar sesión con tu contraseña'
+    );
   }
   try {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -472,8 +673,24 @@ async function supabasePasswordLogin(email: string, password: string): Promise<A
     access_token: string;
     refresh_token?: string;
     expires_in?: number;
-    user?: { id?: string; email?: string };
+    user?: {
+      id?: string;
+      email?: string;
+      app_metadata?: { role?: string };
+      user_metadata?: { role?: string };
+    };
   };
+
+  // Verificación de rol Admin EN EL SERVIDOR: el rol viaja dentro de la
+  // respuesta del endpoint de token (app_metadata), que solo Supabase puede
+  // generar — el navegador nunca decide el rol. Sin rol admin → sin panel.
+  const serverRole = data.user?.app_metadata?.role ?? data.user?.user_metadata?.role;
+  if (serverRole !== 'admin') {
+    throw new AuthError(
+      'NO_ADMIN_ROLE',
+      'Acceso No Autorizado: La cuenta no dispone de rol Admin'
+    );
+  }
 
   const session: AdminSession = {
     accessToken: data.access_token,
@@ -481,22 +698,11 @@ async function supabasePasswordLogin(email: string, password: string): Promise<A
     user: {
       id: data.user?.id ?? 'unknown',
       email: data.user?.email ?? email,
-      // Provisional: el rol real solo se acepta si lo emitió el servidor
-      role: 'user',
+      role: 'admin',
     },
     expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
     provider: 'supabase',
   };
-
-  // Verificación de rol Admin: sale del claim del JWT emitido por Supabase
-  // (complementa las políticas RLS del servidor). Si no está → sin panel.
-  if (!hasAdminClaim(session)) {
-    throw new AuthError(
-      'NO_ADMIN_ROLE',
-      'Acceso No Autorizado: La cuenta no dispone de rol Admin'
-    );
-  }
-  session.user.role = 'admin';
 
   return session;
 }
