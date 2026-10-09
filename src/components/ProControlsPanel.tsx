@@ -1,8 +1,9 @@
 import { motion } from 'framer-motion';
-import { Sparkles, Monitor, Gauge, Zap, Download, Gem, Film, Wand2, Smartphone, Info, Loader2 } from 'lucide-react';
+import { Sparkles, Monitor, Gauge, Zap, Download, Gem, Film, Wand2, Smartphone, Info, Loader2, Cpu } from 'lucide-react';
 import { useState, useEffect, type CSSProperties } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { buildRenderSettings, upscaleNote, type PresetFilters } from '@/lib/qualityPipeline';
+import { useAiEngine } from '@/services/aiEngineService';
 import {
   detectDeviceTier,
   detectPlatform,
@@ -12,6 +13,7 @@ import {
   availableFps,
   availableBitrates,
   tierLabel,
+  useIsDesktop,
   type DeviceTier,
 } from '@/services/platformService';
 
@@ -244,6 +246,11 @@ export function ProControlsPanel({ onFilterChange, onExport, section = 'all' }: 
   const processingOptions = useAppStore((s) => s.processingOptions);
   const currentVideo = useAppStore((s) => s.currentVideo);
   const isExporting = useAppStore((s) => s.isExporting);
+  // Mejora IA (Real-ESRGAN): sólo el escritorio tiene motor local; en la web
+  // se muestra el estado honesto (nunca se simula la IA en el navegador).
+  const isDesktop = useIsDesktop();
+  const aiOn = processingOptions.aiUpscale ?? false;
+  const aiEngine = useAiEngine(isDesktop);
   const [tier] = useState<DeviceTier>(() => detectDeviceTier());
   const [platform] = useState(() => detectPlatform());
   // Móvil real (UA) o ventana táctil estrecha: tope honesto 4K/60/50.
@@ -676,6 +683,98 @@ export function ProControlsPanel({ onFilterChange, onExport, section = 'all' }: 
               exportar (PC y móvil).
             </p>
           </button>
+        </div>
+
+        {/* Mejora IA — super-resolución neuronal local (Real-ESRGAN) */}
+        <div>
+          <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+            <Cpu className="w-4 h-4 text-ixi-cyan" />
+            Mejora IA
+          </h4>
+          <button
+            type="button"
+            onClick={() => isDesktop && toggleOption('aiUpscale')}
+            aria-pressed={aiOn}
+            aria-disabled={!isDesktop}
+            data-testid="ai-upscale-toggle"
+            className={`w-full p-3 rounded-xl border text-left transition-all ${
+              !isDesktop
+                ? 'bg-ixi-bgSecondary/30 border-ixi-border opacity-80 cursor-not-allowed'
+                : aiOn
+                  ? 'bg-ixi-cyan/10 border-ixi-cyan/50 shadow-glow-cyan-sm'
+                  : 'bg-ixi-bgSecondary/50 border-ixi-border hover:border-ixi-cyan/30'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className={`text-sm font-medium flex items-center gap-2 ${
+                  aiOn && isDesktop ? 'text-ixi-cyan' : 'text-ixi-text'
+                }`}
+              >
+                <Cpu className="w-4 h-4" />
+                Super-resolución neuronal
+              </span>
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded-full border font-semibold ${
+                  !isDesktop
+                    ? 'border-white/10 text-ixi-textMuted'
+                    : aiOn
+                      ? 'border-ixi-cyan/40 bg-ixi-cyan/10 text-ixi-cyan'
+                      : 'border-white/10 text-ixi-textMuted'
+                }`}
+              >
+                {!isDesktop ? 'ESCRITORIO' : aiOn ? 'ACTIVO' : 'OFF'}
+              </span>
+            </div>
+            <p className="text-[11px] text-ixi-textMuted mt-1.5 leading-snug">
+              {isDesktop
+                ? 'Red neuronal Real-ESRGAN en tu GPU: síntesis de detalle de verdad (mejora antes/después medida). 0 €, licencia MIT, sin subir el vídeo a ningún servidor. Si el motor no está instalado, el export sigue con Lanczos y lo indica en el plan.'
+                : 'La super-resolución neuronal está en la app de escritorio (gratis). La web exporta en tu navegador con el pipeline clásico: aquí no se simula IA.'}
+            </p>
+          </button>
+
+          {isDesktop && (
+            <div className="mt-2 p-3 rounded-xl border bg-ixi-bgSecondary/40 border-ixi-border space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-[11px] text-ixi-textMuted">
+                  {aiEngine.cap
+                    ? aiEngine.cap.installed
+                      ? `Motor instalado · ${aiEngine.cap.gpuName ?? 'GPU'}${aiEngine.cap.vramMb ? ` · ${Math.round(aiEngine.cap.vramMb / 1024)} GB` : ''} · v${aiEngine.cap.engineVersion}`
+                      : aiEngine.cap.canInstall
+                        ? `Motor sin instalar · ${aiEngine.cap.gpuName ?? 'GPU detectada'} · 45 MB (una vez)`
+                        : `No disponible: ${aiEngine.cap.reason ?? 'requisitos no cumplidos'}`
+                    : 'Comprobando el motor de IA…'}
+                </span>
+                {aiEngine.cap && !aiEngine.cap.installed && aiEngine.cap.canInstall && (
+                  <button
+                    type="button"
+                    onClick={() => void aiEngine.install()}
+                    disabled={aiEngine.installing}
+                    className="btn-primary text-xs px-3 py-1.5 disabled:opacity-50"
+                  >
+                    {aiEngine.installing ? `Instalando… ${aiEngine.progress}%` : 'Instalar motor'}
+                  </button>
+                )}
+              </div>
+              {aiEngine.installing && (
+                <div
+                  className="h-1.5 rounded-full bg-ixi-border overflow-hidden"
+                  role="progressbar"
+                  aria-valuenow={aiEngine.progress}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <motion.div
+                    className="h-full bg-ixi-cyan"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${aiEngine.progress}%` }}
+                    transition={{ duration: 0.2 }}
+                  />
+                </div>
+              )}
+              {aiEngine.error && <p className="text-[11px] text-ixi-danger">{aiEngine.error}</p>}
+            </div>
+          )}
         </div>
 
         {/* Bitrate */}
