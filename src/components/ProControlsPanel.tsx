@@ -13,7 +13,7 @@ import {
   availableFps,
   availableBitrates,
   tierLabel,
-  useIsDesktop,
+  useIsNativeRuntime,
   type DeviceTier,
 } from '@/services/platformService';
 
@@ -246,11 +246,14 @@ export function ProControlsPanel({ onFilterChange, onExport, section = 'all' }: 
   const processingOptions = useAppStore((s) => s.processingOptions);
   const currentVideo = useAppStore((s) => s.currentVideo);
   const isExporting = useAppStore((s) => s.isExporting);
-  // Mejora IA (Real-ESRGAN): sólo el escritorio tiene motor local; en la web
-  // se muestra el estado honesto (nunca se simula la IA en el navegador).
-  const isDesktop = useIsDesktop();
+  // Mejora IA (Real-ESRGAN): sólo la app nativa (Tauri) tiene el motor local.
+  // OJO: NO se usa useIsDesktop() aquí porque mide el ancho de ventana y
+  // devuelve true también en un navegador de escritorio, lo que hacía que la
+  // web intentara invocar a Tauri y fallara con "Cannot read properties of
+  // undefined (reading 'invoke')".
+  const isNativeApp = useIsNativeRuntime();
   const aiOn = processingOptions.aiUpscale ?? false;
-  const aiEngine = useAiEngine(isDesktop);
+  const aiEngine = useAiEngine(isNativeApp);
   const [tier] = useState<DeviceTier>(() => detectDeviceTier());
   const [platform] = useState(() => detectPlatform());
   // Móvil real (UA) o ventana táctil estrecha: tope honesto 4K/60/50.
@@ -693,12 +696,12 @@ export function ProControlsPanel({ onFilterChange, onExport, section = 'all' }: 
           </h4>
           <button
             type="button"
-            onClick={() => isDesktop && toggleOption('aiUpscale')}
+            onClick={() => isNativeApp && toggleOption('aiUpscale')}
             aria-pressed={aiOn}
-            aria-disabled={!isDesktop}
+            aria-disabled={!isNativeApp}
             data-testid="ai-upscale-toggle"
             className={`w-full p-3 rounded-xl border text-left transition-all ${
-              !isDesktop
+              !isNativeApp
                 ? 'bg-ixi-bgSecondary/30 border-ixi-border opacity-80 cursor-not-allowed'
                 : aiOn
                   ? 'bg-ixi-cyan/10 border-ixi-cyan/50 shadow-glow-cyan-sm'
@@ -708,7 +711,7 @@ export function ProControlsPanel({ onFilterChange, onExport, section = 'all' }: 
             <div className="flex items-center justify-between gap-2">
               <span
                 className={`text-sm font-medium flex items-center gap-2 ${
-                  aiOn && isDesktop ? 'text-ixi-cyan' : 'text-ixi-text'
+                  aiOn && isNativeApp ? 'text-ixi-cyan' : 'text-ixi-text'
                 }`}
               >
                 <Cpu className="w-4 h-4" />
@@ -716,24 +719,24 @@ export function ProControlsPanel({ onFilterChange, onExport, section = 'all' }: 
               </span>
               <span
                 className={`text-[10px] px-1.5 py-0.5 rounded-full border font-semibold ${
-                  !isDesktop
+                  !isNativeApp
                     ? 'border-white/10 text-ixi-textMuted'
                     : aiOn
                       ? 'border-ixi-cyan/40 bg-ixi-cyan/10 text-ixi-cyan'
                       : 'border-white/10 text-ixi-textMuted'
                 }`}
               >
-                {!isDesktop ? 'ESCRITORIO' : aiOn ? 'ACTIVO' : 'OFF'}
+                {!isNativeApp ? 'ESCRITORIO' : aiOn ? 'ACTIVO' : 'OFF'}
               </span>
             </div>
             <p className="text-[11px] text-ixi-textMuted mt-1.5 leading-snug">
-              {isDesktop
+              {isNativeApp
                 ? 'Red neuronal Real-ESRGAN en tu GPU: síntesis de detalle de verdad (mejora antes/después medida). 0 €, licencia MIT, sin subir el vídeo a ningún servidor. Si el motor no está instalado, el export sigue con Lanczos y lo indica en el plan.'
                 : 'La super-resolución neuronal está en la app de escritorio (gratis). La web exporta en tu navegador con el pipeline clásico: aquí no se simula IA.'}
             </p>
           </button>
 
-          {isDesktop && (
+          {isNativeApp && (
             <div className="mt-2 p-3 rounded-xl border bg-ixi-bgSecondary/40 border-ixi-border space-y-2">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-[11px] text-ixi-textMuted">

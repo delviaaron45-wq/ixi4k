@@ -12,6 +12,30 @@ export type DeviceTier = 'high' | 'medium' | 'low';
 const isTauri = (): boolean =>
   typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
 
+/**
+ * ¿Estamos dentro del contenedor nativo (Tauri) CON el puente IPC utilizable?
+ *
+ * A diferencia de `useIsDesktop()` (que sólo mide el ancho de ventana y
+ * devuelve true también en un navegador de escritorio), esta función exige
+ * que el objeto puente esté definido y exponga `invoke` como función:
+ *   · Tauri v2: `window.__TAURI_INTERNALS__.invoke` (siempre inyectado en la app)
+ *   · Tauri v1: `window.__TAURI__.ipc.invoke`
+ * Fuera del contenedor (web publicada, `npm run dev`, etc.) devuelve false y
+ * NINGÚN código debe invocar comandos nativos.
+ */
+export function isNativeRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  const w = window as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: unknown };
+    __TAURI__?: { ipc?: { invoke?: unknown } };
+  };
+  const internals = w.__TAURI_INTERNALS__;
+  if (internals && typeof internals.invoke === 'function') return true;
+  const legacy = w.__TAURI__;
+  if (legacy && legacy.ipc && typeof legacy.ipc.invoke === 'function') return true;
+  return false;
+}
+
 export function detectPlatform(): Platform {
   if (typeof navigator === 'undefined') return 'unknown';
   const ua = navigator.userAgent || '';
@@ -170,6 +194,15 @@ export function useIsDesktop(): boolean {
   }, []);
 
   return isDesktop;
+}
+
+/** true sólo dentro de la app nativa (Tauri) con puente IPC utilizable. */
+export function useIsNativeRuntime(): boolean {
+  const [native, setNative] = useState(isNativeRuntime);
+  useEffect(() => {
+    setNative(isNativeRuntime());
+  }, []);
+  return native;
 }
 
 export interface PlatformState {

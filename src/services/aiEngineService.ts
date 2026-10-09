@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isNativeRuntime } from '@/services/platformService';
 
 /** Espejo TS de `AiCapability` (serde camelCase) de ai_superres.rs. */
 export interface AiCapabilityView {
@@ -17,9 +18,18 @@ export interface AiCapabilityView {
 /**
  * Estado del motor IA local (Real-ESRGAN ncnn/vulkan).
  *
- * Sólo tiene sentido en la app de escritorio (Tauri). En la web se pasa
- * `enabled = false` y el hook NO invoca nada ni simula capacidades: el UI
- * muestra el estado honesto «no disponible en el navegador».
+ * Sólo tiene sentido en la app de escritorio (Tauri). En la web —publicada o
+ * `npm run dev`— el hook NO invoca nada ni simula capacidades: degrada en
+ * silencio (cap = null) y el UI muestra el estado honesto «sólo escritorio».
+ *
+ * Protecciones (bug real corregido: "Cannot read properties of undefined
+ * (reading 'invoke')" al llamar a Tauri desde un navegador):
+ *   1. `isNativeRuntime()` exige el objeto puente DEFINIDO y con `invoke`
+ *      como función (Tauri v2 `__TAURI_INTERNALS__.invoke`, v1
+ *      `__TAURI__.ipc.invoke`) antes de importar/usar la API.
+ *   2. Comprobación adicional `typeof invoke === 'function'` tras el import.
+ *   3. Todo dentro de try/catch: cualquier fallo se captura, se muestra como
+ *      aviso y NUNCA rompe la interfaz.
  */
 export function useAiEngine(enabled: boolean) {
   const [cap, setCap] = useState<AiCapabilityView | null>(null);
@@ -35,10 +45,12 @@ export function useAiEngine(enabled: boolean) {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!enabled) return;
+    // Fuera del contenedor nativo: no se invoca NADA (sin error, sin simulación)
+    if (!enabled || !isNativeRuntime()) return;
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const c = await invoke<AiCapabilityView>('ai_status');
+      const mod = await import('@tauri-apps/api/core');
+      if (typeof mod?.invoke !== 'function') return;
+      const c = await mod.invoke<AiCapabilityView>('ai_status');
       if (alive.current) setCap(c);
     } catch (e) {
       if (alive.current) setError(e instanceof Error ? e.message : String(e));
@@ -50,21 +62,29 @@ export function useAiEngine(enabled: boolean) {
   }, [refresh]);
 
   const install = useCallback(async () => {
-    if (!enabled || installing) return;
+    if (!enabled || installing || !isNativeRuntime()) return;
     setInstalling(true);
     setError(null);
     setProgress(0);
     let unlisten: (() => void) | undefined;
     try {
       const { listen } = await import('@tauri-apps/api/event');
-      const u = await listen<{ percent: number }>('ai-install-progress', (e) => {
+      if (typeof listen === 'function') {
+        const u = await listen<{ percent: number }>('ai-install-progress', (e) => {
+          if (alive.current) {
+            setProgress(Math.max(0, Math.min(100, e.payload?.percent ?? 0)));
+          }
+        });
+        unlisten = u;
+      }
+      const mod = await import('@tauri-apps/api/core');
+      if (typeof mod?.invoke !== 'function') {
         if (alive.current) {
-          setProgress(Math.max(0, Math.min(100, e.payload?.percent ?? 0)));
+          setError('Puente nativo no disponible: instala la app de escritorio.');
         }
-      });
-      unlisten = u;
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('ai_install_engine');
+        return;
+      }
+      await mod.invoke('ai_install_engine');
       await refresh();
     } catch (e) {
       if (alive.current) setError(e instanceof Error ? e.message : String(e));
